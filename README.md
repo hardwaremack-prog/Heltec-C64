@@ -20,9 +20,10 @@ A Commodore 64 running on a **Heltec WiFi LoRa 32 V3** (the Meshtastic board), p
 
 ## 1. Flash it
 
-**Easiest (Chrome or Edge):** open `https://espressif.github.io/esptool-js/`, plug the board in
-with USB-C, click **Connect**, choose its port, set the address to **0x0**, pick
-`firmware/C64Mesh-HeltecV3.bin` and click **Program**. Press the RST button when done.
+**Easiest:** open the **[C64 Mesh Flasher](https://hardwaremack-prog.github.io/c64mesh/flasher/)** in
+Chrome or Edge on a computer, plug the board in with USB-C, click **INSTALL C64 MESH**, pick its
+port and click Install. Tick *Erase* the first time; leave it unticked when updating so your ROMs and
+disk files are kept. Press the board's RST button when it's done.
 
 **Or with esptool:**
 ```
@@ -30,7 +31,7 @@ esptool --chip esp32s3 write-flash 0x0 firmware/C64Mesh-HeltecV3.bin
 ```
 If the board doesn't show up, hold **PRG**, tap **RST**, release **PRG**, then try again.
 
-Re-flashing an update keeps your uploaded ROMs and disk files.
+Re-flashing an update keeps your uploaded ROMs and disk files (unless you choose Erase).
 
 ## 2. Get it on Wi-Fi
 
