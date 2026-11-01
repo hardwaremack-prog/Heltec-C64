@@ -1,4 +1,4 @@
-// PC test harness for C64Mesh: same emulator + stream code as the ESP32 build.
+// PC test harness for Heltec-C64: same emulator + stream code as the ESP32 build.
 //   ./c64host --port 8181             -> WebSocket stream (what the browser page talks to), real-time
 //   ./c64host --frames 300 --type "PRINT 2+2\n" --dump out.ppm   (headless)
 //   ROM overrides: --basic f --kernal f --chargen f ; virtual disk: --disk dir
@@ -16,10 +16,10 @@
 #include <thread>
 #include <atomic>
 #include <algorithm>
-#include "../C64Mesh/c64.h"
-#include "../C64Mesh/keymap.h"
-#include "../C64Mesh/stream.h"
-#include "../C64Mesh/builtin_roms.h"
+#include "../Heltec-C64/c64.h"
+#include "../Heltec-C64/keymap.h"
+#include "../Heltec-C64/stream.h"
+#include "../Heltec-C64/builtin_roms.h"
 
 struct SockConn : NetConn {
   int fd;
@@ -79,7 +79,10 @@ static bool wildMatch(const char* p, const char* s) {
 int main(int argc, char** argv) {
   std::string basic, kernal, chargen, disk = ".", dump, typed;
   int frames = 0, port = 8181;
-  std::string sysPrg, wav;
+  std::string sysPrg, wav, cartFile, d64File, keysAt;
+  static std::vector<uint8_t> cartData, d64Data;
+  static CartImage cartImg;
+  static D64 d64;
   std::vector<int16_t> pcm;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -93,6 +96,9 @@ int main(int argc, char** argv) {
     else if (a == "--type") typed = nx();
     else if (a == "--port") port = atoi(argv[++i]);
     else if (a == "--sys") sysPrg = nx();
+    else if (a == "--cart") cartFile = nx();
+    else if (a == "--d64") d64File = nx();
+    else if (a == "--keys") keysAt = nx();
     else if (a == "--wav") wav = nx();
   }
   static C64 c64;
@@ -137,8 +143,23 @@ int main(int argc, char** argv) {
     f.write((const char*)data.data(), data.size());
     return true;
   };
+  if (!cartFile.empty()) {
+    cartData = loadFile(cartFile);
+    std::string err;
+    if (!parseCartridge(cartData.data(), cartData.size(), cartImg, err)) { fprintf(stderr, "cartridge: %s\n", err.c_str()); return 1; }
+    printf("cartridge: %s, %d bank(s), EXROM=%d GAME=%d\n", cartTypeName(cartImg.type), cartImg.banks, cartImg.exrom, cartImg.game);
+    c64.insertCart(cartImg);
+  }
+  if (!d64File.empty()) {
+    d64Data = loadFile(d64File);
+    if (!D64::validSize(d64Data.size())) { fprintf(stderr, "not a D64 image\n"); return 1; }
+    d64.size = d64Data.size();
+    d64.readAt = [](uint32_t off, uint8_t* b, size_t n) { if (off + n > d64Data.size()) return false; memcpy(b, d64Data.data() + off, n); return true; };
+    c64.drive8 = &d64;
+  }
   c64.reset();
 
+  static KeyMapper hkeys;
   if (frames > 0) {  // headless test
     auto t0 = std::chrono::steady_clock::now();
     bool typedYet = false;
@@ -146,6 +167,17 @@ int main(int argc, char** argv) {
       if (!typedYet && f >= 150 && !typed.empty()) { c64.typeText(typed.c_str()); typedYet = true; }
       if (f == 150 && !sysPrg.empty()) { auto d = loadFile(sysPrg); c64.injectPrg(d.data(), d.size(), false); c64.pc = d[0] | (d[1] << 8); }
       c64.audioEnabled = !wav.empty();
+      if (!keysAt.empty()) {
+        size_t pos = 0;
+        while (pos < keysAt.size()) {
+          size_t comma = keysAt.find(',', pos); if (comma == std::string::npos) comma = keysAt.size();
+          std::string item = keysAt.substr(pos, comma - pos); pos = comma + 1;
+          int fr = atoi(item.c_str()); uint32_t sym = strtoul(item.substr(item.find(':') + 1).c_str(), nullptr, 16);
+          if (f == fr) hkeys.push(sym, true);
+          if (f == fr + 6) hkeys.push(sym, false);
+        }
+        hkeys.apply(c64);
+      }
       c64.runFrame();
       int16_t tmp[1024]; int n;
       while ((n = c64.readAudio(tmp, 1024)) > 0) if (f > 150) pcm.insert(pcm.end(), tmp, tmp + n);

@@ -6,7 +6,7 @@ static const char PLAYER_HTML[] PROGMEM = R"HTML(<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#1b1a4a">
-<title>C64 Mesh</title>
+<title>Heltec-C64</title>
 <style>
 :root{--bg:#121133;--bar:#1b1a4a;--key:#3a3870;--key2:#4b4890;--ink:#eceaff;--dim:#a9a6e6;--acc:#a9ff9f;--warn:#edf171}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -48,7 +48,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 @media (max-width:600px){header h1{display:none}.lbl{display:none}}
 </style></head><body>
 <header>
- <h1>C64 MESH</h1>
+ <h1>HELTEC-C64</h1>
  <button class="tb" id="bSound" title="Sound">&#128264;<span class="lbl"> Sound</span></button>
  <button class="tb" id="bKbd" title="On-screen keyboard">&#9000;<span class="lbl"> Keys</span></button>
  <button class="tb" id="bJoy" title="Joystick">&#127918;<span class="lbl"> Joystick</span></button>

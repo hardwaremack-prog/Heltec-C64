@@ -1,5 +1,5 @@
 const fs=require('fs');
-const h=fs.readFileSync('../C64Mesh/player.h','utf8');
+const h=fs.readFileSync('../Heltec-C64/player.h','utf8');
 const src=h.split('/*DECODE-START*/')[1].split('/*DECODE-END*/')[0];
 const applyTiles=new Function(src+';return applyTiles;')();
 const W=384,H=272,pal=[...Array(16).keys()];   // identity palette -> indices
@@ -9,4 +9,4 @@ const ref=fs.readFileSync('ws_boot.raw');let diff=0;for(let i=0;i<W*H;i++)if(px[
 console.log('JS decoder vs Python decoder: '+diff+' differing pixels of '+W*H);
 // full page script parses?
 const s=h.split('<script>')[1].split('</script>')[0];new Function(s);console.log('player page JS parses ok');
-const w=fs.readFileSync('../C64Mesh/webui.h','utf8');new Function(w.split('<script>')[1].split('</script>')[0]);console.log('settings page JS parses ok');
+const w=fs.readFileSync('../Heltec-C64/webui.h','utf8');new Function(w.split('<script>')[1].split('</script>')[0]);console.log('settings page JS parses ok');

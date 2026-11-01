@@ -1,4 +1,4 @@
-// C64Mesh emulator core: 6502 CPU, memory banking, VIC-II (line renderer),
+// Heltec-C64 emulator core: 6502 CPU, memory banking, VIC-II (line renderer),
 // CIA 1/2 (timers, keyboard, joystick, TOD), SID stub, device 8 LOAD/SAVE traps.
 #include "c64.h"
 #include <stdlib.h>
@@ -99,6 +99,7 @@ void C64::reset() {
   cia1.reset();
   cia2.reset();
   port00 = 0x2F; port01 = 0x37;
+  cartReset();
   updateBanking();
   raster = 0; rasterCmp = 0; vicIrqFlags = 0; collSS = collSB = 0;
   nmiLine = nmiPending = false;
@@ -110,26 +111,50 @@ void C64::reset() {
 
 void C64::restoreKey() { nmiPending = true; }
 
+// The C64's PLA: CPU port bits LORAM/HIRAM/CHAREN plus the cartridge's EXROM/GAME lines.
 void C64::updateBanking() {
   uint8_t eff = (port01 | ~port00) & 7;
-  mapBasic = (eff & 3) == 3;
-  mapKernal = (eff & 2) != 0;
-  mapIO = (eff & 3) && (eff & 4);
-  mapChar = (eff & 3) && !(eff & 4);
+  bool L = eff & 1, H = eff & 2, C = eff & 4;
+  bool E = cartOn ? exromLine : 1, G = cartOn ? gameLine : 1;
+  ultimax = !G && E;
+  if (ultimax) {   // MAX machine mode: 4K RAM, cartridge ROM at $8000 and $E000, I/O always on
+    mapBasic = mapKernal = mapChar = false;
+    mapIO = true;
+    mapRomL = true; mapRomHa = false; mapRomHe = true;
+    return;
+  }
+  mapRomL = !E && L && H;
+  mapRomHa = !E && !G && H;
+  mapRomHe = false;
+  mapBasic = G && L && H;
+  mapKernal = H;
+  mapIO = C && (L || H);
+  mapChar = !C && (L || H) && !(!E && G && !H);
 }
 
 inline uint8_t C64::read(uint16_t ad) {
   if (ad >= 0xA000) {
-    if (ad < 0xC000) return mapBasic ? basicRom[ad - 0xA000] : ram[ad];
-    if (ad < 0xD000) return ram[ad];
+    if (ad < 0xC000) {
+      if (mapBasic) return basicRom[ad - 0xA000];
+      if (mapRomHa) return curH ? curH[(ad - 0xA000) & curMaskH] : 0xFF;
+      return ultimax ? 0xFF : ram[ad];
+    }
+    if (ad < 0xD000) return ultimax ? 0xFF : ram[ad];
     if (ad < 0xE000) {
       if (mapIO) return readIO(ad);
       if (mapChar) return charRom[ad - 0xD000];
       return ram[ad];
     }
-    return mapKernal ? kernalRom[ad - 0xE000] : ram[ad];
+    if (mapKernal) return kernalRom[ad - 0xE000];
+    if (mapRomHe) return curH ? curH[(ad - 0xE000) & curMaskH] : 0xFF;
+    return ram[ad];
+  }
+  if (ad >= 0x8000) {
+    if (mapRomL) return curL ? curL[(ad - 0x8000) & curMaskL] : 0xFF;
+    return ram[ad];
   }
   if (ad < 2) return ad ? (uint8_t)((port01 & port00) | (~port00 & 0x17)) : port00;
+  if (ultimax && ad >= 0x1000) return 0xFF;
   return ram[ad];
 }
 
@@ -140,6 +165,7 @@ inline void C64::write(uint16_t ad, uint8_t v) {
     return;
   }
   if (ad >= 0xD000 && ad < 0xE000 && mapIO) { writeIO(ad, v); return; }
+  if (ultimax && ad >= 0x1000 && (ad < 0xD000 || ad >= 0xE000)) return;   // nothing writable there
   ram[ad] = v;
 }
 
@@ -151,6 +177,7 @@ uint16_t C64::vicBank() {
 inline uint8_t C64::vicRead(uint16_t a14) {
   uint16_t bank = vicBank();
   a14 &= 0x3FFF;
+  if (ultimax && (a14 & 0x3000) == 0x3000) return curH ? curH[(0x1000 | (a14 & 0xFFF)) & curMaskH] : 0xFF;
   if ((bank == 0 || bank == 0x8000) && (a14 & 0x3000) == 0x1000) return charRom[a14 & 0xFFF];
   return ram[(uint16_t)(bank + a14)];
 }
@@ -178,7 +205,7 @@ uint8_t C64::readIO(uint16_t ad) {
   if (ad < 0xDC00) return (colorRam[ad & 0x3FF] & 0x0F) | 0xF0;
   if (ad < 0xDD00) return readCIA(cia1, ad & 0x0F, true);
   if (ad < 0xDE00) return readCIA(cia2, ad & 0x0F, false);
-  return 0xFF;
+  return cartOn ? cartIoRead(ad) : 0xFF;
 }
 
 void C64::writeIO(uint16_t ad, uint8_t v) {
@@ -203,6 +230,7 @@ void C64::writeIO(uint16_t ad, uint8_t v) {
   if (ad < 0xDC00) { colorRam[ad & 0x3FF] = v & 0x0F; return; }
   if (ad < 0xDD00) { writeCIA(cia1, ad & 0x0F, v, true); return; }
   if (ad < 0xDE00) { writeCIA(cia2, ad & 0x0F, v, false); return; }
+  if (cartOn) cartIoWrite(ad, v);
 }
 
 uint8_t C64::readCIA(CIA& c, int r, bool isCia1) {
@@ -619,6 +647,68 @@ static char petToAscii(uint8_t c) {
   return '_';
 }
 
+bool C64::buildDirectory(std::vector<uint8_t>& data) {
+  // A BASIC "program" that LISTs like a 1541 directory.
+  uint16_t addr = 0x0801;
+  data.clear();
+  data.push_back(0x01); data.push_back(0x08);
+  auto addLine = [&](uint16_t num, const std::vector<uint8_t>& text) {
+    uint16_t next = addr + 4 + text.size() + 1;
+    data.push_back(next & 0xFF); data.push_back(next >> 8);
+    data.push_back(num & 0xFF); data.push_back(num >> 8);
+    data.insert(data.end(), text.begin(), text.end());
+    data.push_back(0);
+    addr = next;
+  };
+  auto str = [](const char* s) { return std::vector<uint8_t>(s, s + strlen(s)); };
+  auto entryLine = [&](int blocks, const uint8_t* nm, int nl, const char* type, bool splat, bool locked) {
+    std::vector<uint8_t> line;
+    for (int i = blocks < 10 ? 3 : blocks < 100 ? 2 : 1; i > 0; i--) line.push_back(' ');
+    line.push_back('"');
+    line.insert(line.end(), nm, nm + nl);
+    line.push_back('"');
+    for (int i = nl; i < 16; i++) line.push_back(' ');
+    line.push_back(splat ? '*' : ' ');
+    for (const char* t = type; *t; t++) line.push_back(*t);
+    if (locked) line.push_back('<');
+    addLine((uint16_t)blocks, line);
+  };
+  if (drive8) {
+    uint8_t name[16], id[5];
+    int freeBlocks = 0;
+    if (!drive8->header(name, id, freeBlocks)) return false;
+    std::vector<uint8_t> h = {0x12, '"'};
+    for (int i = 0; i < 16; i++) h.push_back(name[i] == 0xA0 ? ' ' : name[i]);
+    h.push_back('"'); h.push_back(' ');
+    for (int i = 0; i < 5; i++) h.push_back(id[i] == 0xA0 ? ' ' : id[i]);
+    addLine(0, h);
+    std::vector<D64::Entry> files;
+    drive8->list(files);
+    static const char* T[8] = {"DEL", "SEQ", "PRG", "USR", "REL", "???", "???", "???"};
+    for (auto& f : files) entryLine(f.blocks, f.name, f.nameLen, T[f.type & 7], !(f.type & 0x80), (f.type & 0x40) != 0);
+    addLine((uint16_t)freeBlocks, str("BLOCKS FREE."));
+  } else {
+    std::vector<std::pair<std::string, uint32_t>> files;
+    if (diskList) diskList(files);
+    std::string t = diskTitle.substr(0, 16);
+    t.resize(16, ' ');
+    std::vector<uint8_t> h = {0x12, '"'};
+    h.insert(h.end(), t.begin(), t.end());
+    for (const char* s = "\" 64 2A"; *s; s++) h.push_back(*s);
+    addLine(0, h);
+    uint32_t used = 0;
+    for (auto& f : files) {
+      int blocks = (f.second + 253) / 254;
+      used += blocks;
+      std::string nm = f.first.substr(0, 16);
+      entryLine(blocks, (const uint8_t*)nm.data(), nm.size(), "PRG", false, false);
+    }
+    addLine((uint16_t)(used > 664 ? 0 : 664 - used), str("BLOCKS FREE."));
+  }
+  data.push_back(0); data.push_back(0);
+  return true;
+}
+
 bool C64::trap() {
   bool isLoad = (pc == 0xFFD5), isSave = (pc == 0xFFD8);
   uint16_t lv = ram[0x330] | (ram[0x331] << 8), sv = ram[0x332] | (ram[0x333] << 8);
@@ -631,50 +721,20 @@ bool C64::trap() {
   if (dev < 8 || dev > 11) return false;
 
   std::string name;
+  std::vector<uint8_t> raw;
   uint16_t fn = ram[0xBB] | (ram[0xBC] << 8);
-  for (int i = 0; i < ram[0xB7]; i++) name += petToAscii(read(fn + i));
+  for (int i = 0; i < ram[0xB7]; i++) { uint8_t ch = read(fn + i); raw.push_back(ch); name += petToAscii(ch); }
 
   if (isLoad) {
     std::vector<uint8_t> data;
     bool ok = false;
     uint8_t sa = ram[0xB9];
-    if (name == "$" || name.rfind("$0", 0) == 0 || name.rfind("$:", 0) == 0) {
-      // Build a BASIC "program" that LISTs like a 1541 directory.
-      std::vector<std::pair<std::string, uint32_t>> files;
-      if (diskList) diskList(files);
-      uint16_t addr = 0x0801;
-      data.push_back(0x01); data.push_back(0x08);
-      auto addLine = [&](uint16_t num, const std::string& text) {
-        uint16_t next = addr + 4 + text.size() + 1;
-        data.push_back(next & 0xFF); data.push_back(next >> 8);
-        data.push_back(num & 0xFF); data.push_back(num >> 8);
-        for (char ch : text) data.push_back((uint8_t)ch);
-        data.push_back(0);
-        addr = next;
-      };
-      std::string t = diskTitle.substr(0, 16);
-      t.resize(16, ' ');
-      addLine(0, std::string("\x12\"") + t + "\" 64 2A");
-      uint32_t used = 0;
-      for (auto& f : files) {
-        uint32_t blocks = (f.second + 253) / 254;
-        used += blocks;
-        std::string line;
-        if (blocks < 10) line += "   ";
-        else if (blocks < 100) line += "  ";
-        else line += " ";
-        std::string nm = f.first.substr(0, 16);
-        line += "\"" + nm + "\"";
-        line += std::string(17 - nm.size(), ' ');
-        line += "PRG";
-        addLine((uint16_t)blocks, line);
-      }
-      uint32_t freeb = used > 664 ? 0 : 664 - used;
-      addLine((uint16_t)freeb, "BLOCKS FREE.");
-      data.push_back(0); data.push_back(0);
-      ok = true;
+    if (!raw.empty() && raw[0] == '$') {
+      ok = buildDirectory(data);
       sa = 0;
       x = 0x01; y = 0x08;
+    } else if (drive8) {
+      ok = !raw.empty() && drive8->load(raw.data(), raw.size(), data);
     } else if (diskLoad) {
       ok = diskLoad(name, data) && data.size() >= 2;
     }
@@ -708,6 +768,104 @@ bool C64::trap() {
   uint16_t l = pop();
   pc = (l | (pop() << 8)) + 1;
   return true;
+}
+
+// ---------------------------------------------------------------- cartridge port
+void C64::insertCart(const CartImage& c) {
+  cart = c;
+  cartOn = true;
+  cartReset();
+  updateBanking();
+}
+
+void C64::removeCart() {
+  cartOn = false;
+  curL = curH = nullptr;
+  exromLine = gameLine = 1;
+  updateBanking();
+}
+
+void C64::cartReset() {
+  memset(efRam, 0, sizeof efRam);
+  if (!cartOn) { exromLine = gameLine = 1; curL = curH = nullptr; return; }
+  exromLine = cart.exrom;
+  gameLine = cart.game;
+  cartSelect(0);
+}
+
+void C64::cartSelect(int b) {
+  if (cart.banks <= 0) { curL = curH = nullptr; return; }
+  if (b >= cart.banks && cart.type != 32) b %= cart.banks;
+  cartBank = b;
+  if (b >= cart.banks) { curL = curH = nullptr; return; }
+  curL = cart.roml[b]; curMaskL = cart.maskL[b];
+  curH = cart.romh[b]; curMaskH = cart.maskH[b];
+  if (cart.type == 5) {   // Ocean: a bank shows up in whichever window is open
+    if (!curL) { curL = curH; curMaskL = curMaskH; }
+    if (!curH) { curH = curL; curMaskH = curMaskL; }
+  }
+}
+
+uint8_t C64::cartIoRead(uint16_t ad) {
+  bool io1 = ad < 0xDF00;
+  switch (cart.type) {
+    case 4:   // Simons' BASIC: reading IO1 switches to 8K mode
+      if (io1) { gameLine = 1; updateBanking(); }
+      break;
+    case 15:  // C64 Game System: reading IO1 selects bank 0
+      if (io1) cartSelect(0);
+      break;
+    case 17:  // Dinamic: reading IO1 selects the bank
+      if (io1) cartSelect(ad & 0x0F);
+      break;
+    case 32:  // EasyFlash: 256 bytes of RAM in IO2
+      if (!io1) return efRam[ad & 0xFF];
+      break;
+  }
+  return 0xFF;
+}
+
+void C64::cartIoWrite(uint16_t ad, uint8_t v) {
+  bool io1 = ad < 0xDF00;
+  switch (cart.type) {
+    case 4:
+      if (io1) { gameLine = 0; updateBanking(); }
+      break;
+    case 5:   // Ocean
+      if (io1) cartSelect(v & 0x3F);
+      break;
+    case 8:   // Super Games: IO2 = bank + disable bit
+      if (!io1) {
+        cartSelect(v & 3);
+        if (v & 4) exromLine = gameLine = 1;
+        else exromLine = gameLine = 0;
+        updateBanking();
+      }
+      break;
+    case 15:  // C64 Game System / System 3: bank from the address written
+      if (io1) cartSelect(ad & 0x3F);
+      break;
+    case 19:  // Magic Desk / Domark / HES Australia
+      if (io1) {
+        cartSelect(v & 0x7F);
+        exromLine = (v & 0x80) ? 1 : 0;
+        updateBanking();
+      }
+      break;
+    case 32:  // EasyFlash
+      if (io1) {
+        if (ad & 2) {
+          exromLine = (v & 2) ? 0 : 1;
+          gameLine = (v & 4) ? ((v & 1) ? 0 : 1) : 0;
+          updateBanking();
+        } else {
+          cartSelect(v & 0x3F);
+        }
+      } else {
+        efRam[ad & 0xFF] = v;
+      }
+      break;
+  }
 }
 
 // ---------------------------------------------------------------- video

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end test of the C64 Mesh WebSocket stream against ./c64host.
+"""End-to-end test of the Heltec-C64 WebSocket stream against ./c64host.
   python3 test_stream.py video   -> types on the keyboard + paste, saves screen PNGs, dumps tile messages
   python3 test_stream.py audio   -> needs c64host --sys disk/A440.prg; measures the streamed pitch
 """

@@ -1,5 +1,5 @@
 /*
-  C64 Mesh  -  a Commodore 64 on a Heltec WiFi LoRa 32 V3 (ESP32-S3), played in a web browser.
+  Heltec-C64  -  a Commodore 64 on a Heltec WiFi LoRa 32 V3 (ESP32-S3), played in a web browser.
 
   - Emulator (6502 + VIC-II + CIA + SID sound) runs on CPU core 1
   - Wi-Fi, web pages (port 80), screen+sound stream (WebSocket, port 81) and the OLED run on core 0
@@ -49,6 +49,8 @@ static bool apMode = false;
 static volatile bool warp = false;
 static volatile int speedPct = 0;
 static volatile int oledPage = 0;
+
+#include "boardmedia.h"
 
 // ---------------- commands from core 0 to the emulator task
 static portMUX_TYPE cmdMux = portMUX_INITIALIZER_UNLOCKED;
@@ -240,7 +242,7 @@ static void drawOled() {
     }
   } else {
     char line[24];
-    oled.text(0, 0, " **C64  MESH** ", true);
+    oled.text(0, 0, "  HELTEC-C64   ", true);
     if (apMode) {
       oled.text(0, 2, "WIFI SETUP:");
       oled.text(0, 3, AP_SSID);
@@ -253,7 +255,7 @@ static void drawOled() {
     }
     snprintf(line, sizeof line, "%s %d%%", stream.active() ? (stream.soundOn() ? "PLAYING+SND" : "PLAYING") : "NO VIEWER", speedPct);
     oled.text(0, 6, line);
-    oled.text(0, 7, slots[1].use ? "ROMS: YOURS" : "ROMS: OPEN");
+    oled.text(0, 7, c64.hasCart() ? "CARTRIDGE IN" : d64Now[0] ? "DISK IN DRIVE" : slots[1].use ? "ROMS: YOURS" : "ROMS: OPEN");
   }
   oled.show();
 }
@@ -290,6 +292,7 @@ static void emuTask(void*) {
   int renderEvery = 1;
   uint32_t fc = 0;
   for (;;) {
+    mediaService(keys);
     if (cmdReset) { cmdReset = false; applyRoms(); c64.reset(); keys.releaseAll(c64); }
     if (cmdRestore) { cmdRestore = false; c64.restoreKey(); }
     if (cmdPrgPending) {
@@ -373,7 +376,14 @@ static void setupWeb() {
     listDisk(files);
     for (size_t i = 0; i < files.size(); i++)
       j += String(i ? "," : "") + "{\"n\":\"" + jsonEsc(files[i].first.c_str()) + "\",\"s\":" + String(files[i].second) + "}";
-    j += "],\"fsfree\":" + String((uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes()));
+    j += "],\"cart\":{\"stored\":" + String(cartStored ? "true" : "false") + ",\"on\":" + String(c64.hasCart() ? "true" : "false") +
+         ",\"name\":\"" + jsonEsc(cartFileName) + "\",\"type\":\"" + jsonEsc(cartTypeStr) + "\",\"size\":" + String(cartLen) + "}";
+    j += ",\"d64\":{\"in\":\"" + jsonEsc(d64Now) + "\",\"images\":[";
+    std::vector<std::pair<String, uint32_t>> imgs;
+    listD64(imgs);
+    for (size_t i = 0; i < imgs.size(); i++) j += String(i ? "," : "") + "{\"n\":\"" + jsonEsc(imgs[i].first) + "\",\"s\":" + String(imgs[i].second) + "}";
+    j += "]}";
+    j += ",\"fsfree\":" + String((uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes()));
     j += ",\"heap\":" + String(ESP.getFreeHeap()) + "}";
     web.send(200, "application/json", j);
   });
@@ -469,6 +479,82 @@ static void setupWeb() {
     web.send(404, "text/plain", "Not found");
   });
 
+  // ---- cartridge (streamed straight into its flash partition)
+  static String cartUpName;
+  web.on("/api/cart", HTTP_POST, [] {
+    String err;
+    bool ok = cartWriteEnd(cartUpName, err);
+    if (ok) { prefs.putBool("cart", true); mediaRequest(2); web.send(200, "text/plain", "ok"); }
+    else { prefs.putBool("cart", false); web.send(400, "text/plain", err); }
+  }, [] {
+    HTTPUpload& u = web.upload();
+    if (u.status == UPLOAD_FILE_START) {
+      cartUpName = u.filename;
+      mediaRequest(1);        // pull any cartridge out before its flash is rewritten
+      cartStored = false;
+      cartWriteBegin();
+    } else if (u.status == UPLOAD_FILE_WRITE) {
+      cartWriteChunk(u.buf, u.currentSize);
+    }
+  });
+  web.on("/api/cartin", HTTP_POST, [] {
+    if (!cartStored) { web.send(400, "text/plain", "No cartridge stored"); return; }
+    prefs.putBool("cart", true); mediaRequest(2); web.send(200, "text/plain", "ok");
+  });
+  web.on("/api/cartout", HTTP_POST, [] { prefs.putBool("cart", false); mediaRequest(1); web.send(200, "text/plain", "ok"); });
+
+  // ---- floppy images (.d64), streamed to LittleFS
+  static File d64Up;
+  static String d64UpName;
+  static bool d64UpOk = false;
+  web.on("/api/d64", HTTP_POST, [] {
+    size_t sz = d64Up ? d64Up.size() : 0;
+    if (d64Up) d64Up.close();
+    if (!d64UpOk || !D64::validSize(sz)) {
+      LittleFS.remove("/d64/upload.tmp");
+      web.send(400, "text/plain", d64UpOk ? "Not a .d64 floppy image (wrong size)" : "Flash full?");
+      return;
+    }
+    bool wasIn = d64UpName == d64Now;
+    if (wasIn) { d64Want[0] = 0; mediaRequest(3); }
+    LittleFS.remove("/d64/" + d64UpName + ".d64");
+    LittleFS.rename("/d64/upload.tmp", "/d64/" + d64UpName + ".d64");
+    if (wasIn || web.arg("insert") == "1") {
+      strncpy(d64Want, d64UpName.c_str(), sizeof d64Want - 1);
+      prefs.putString("d64", d64UpName);
+      mediaRequest(3);
+    }
+    web.send(200, "text/plain", "ok");
+  }, [] {
+    HTTPUpload& u = web.upload();
+    if (u.status == UPLOAD_FILE_START) {
+      String f = u.filename;
+      int dot = f.lastIndexOf('.');
+      if (dot > 0) f = f.substring(0, dot);
+      d64UpName = diskName(f);
+      if (!d64UpName.length()) d64UpName = "DISK";
+      d64Up = LittleFS.open("/d64/upload.tmp", "w");
+      d64UpOk = (bool)d64Up;
+    } else if (u.status == UPLOAD_FILE_WRITE) {
+      if (d64UpOk && (d64Up.size() + u.currentSize > 197376 || d64Up.write(u.buf, u.currentSize) != u.currentSize)) d64UpOk = false;
+    }
+  });
+  web.on("/api/d64in", HTTP_POST, [] {
+    String n = web.arg("name");
+    strncpy(d64Want, n.c_str(), sizeof d64Want - 1);
+    d64Want[sizeof d64Want - 1] = 0;
+    prefs.putString("d64", n);
+    mediaRequest(3);
+    if (n.length() && n != d64Now) { web.send(404, "text/plain", "Couldn't open that disk image"); return; }
+    web.send(200, "text/plain", "ok");
+  });
+  web.on("/api/d64del", HTTP_POST, [] {
+    String n = web.arg("name");
+    if (n == d64Now) { d64Want[0] = 0; prefs.putString("d64", ""); mediaRequest(3); }
+    LittleFS.remove("/d64/" + n + ".d64");
+    web.send(200, "text/plain", "ok");
+  });
+
   // ---- Wi-Fi
   web.on("/api/scan", HTTP_GET, [] {
     int n = WiFi.scanNetworks();
@@ -529,6 +615,8 @@ void setup() {
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
   LittleFS.mkdir("/roms");
   LittleFS.mkdir("/disk");
+  LittleFS.mkdir("/d64");
+  LittleFS.remove("/d64/upload.tmp");
   prefs.begin("c64mesh", false);
 
   // ROMs + emulator
@@ -553,10 +641,22 @@ void setup() {
     f.close();
     return ok;
   };
+  // cartridge + floppy remembered from last time
+  cartPart = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "cart");
+  {
+    String err;
+    cartLoadStored(err);
+    if (cartStored && prefs.getBool("cart", false)) c64.insertCart(cartImg);
+  }
+  {
+    String d = prefs.getString("d64", "");
+    strncpy(d64Want, d.c_str(), sizeof d64Want - 1);
+    d64Open(d64Want);
+  }
   c64.reset();
 
   oled.begin();
-  oled.clear(); oled.text(0, 0, " **C64  MESH** ", true); oled.text(0, 3, "JOINING WIFI..."); oled.show();
+  oled.clear(); oled.text(0, 0, "  HELTEC-C64   ", true); oled.text(0, 3, "JOINING WIFI..."); oled.show();
 
   // Wi-Fi: saved network, else hotspot
   String ssid = prefs.getString("ssid", ""), pass = prefs.getString("pass", "");
@@ -577,7 +677,7 @@ void setup() {
   if (MDNS.begin(HOSTNAME)) {
     MDNS.addService("http", "tcp", 80);
   }
-  Serial.printf("C64 Mesh ready: http://%s/\n", apMode ? "192.168.4.1" : WiFi.localIP().toString().c_str());
+  Serial.printf("Heltec-C64 ready: http://%s/\n", apMode ? "192.168.4.1" : WiFi.localIP().toString().c_str());
 
   stream.onPaste = [](const std::string& t) { c64.typeText(t.c_str()); };
   streamListener.begin();

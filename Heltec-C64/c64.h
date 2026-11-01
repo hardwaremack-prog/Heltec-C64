@@ -1,4 +1,4 @@
-// C64Mesh - a small Commodore 64 emulator core (6502 + VIC-II + CIA x2)
+// Heltec-C64 - a small Commodore 64 emulator core (6502 + VIC-II + CIA x2)
 // Portable C++: runs on ESP32-S3 (Heltec V3) and on a PC for testing.
 #pragma once
 #include <stdint.h>
@@ -7,6 +7,7 @@
 #include <vector>
 #include <functional>
 #include "sid.h"
+#include "media.h"
 
 // ---- Screen geometry (PAL, with border) ----
 static const int C64_W = 384;            // 32px border + 320 + 32px border
@@ -55,11 +56,19 @@ class C64 {
   uint8_t joy2 = 0;        // bits: 0 up,1 down,2 left,3 right,4 fire (1 = pressed)
   uint8_t joy1 = 0;
 
+  // Cartridge port: insertCart() then reset() to start it; removeCart() to pull it out.
+  void insertCart(const CartImage& c);
+  void removeCart();
+  bool hasCart() const { return cartOn; }
+
+  // Floppy image in drive 8 (takes priority over the file hooks below for LOAD). nullptr = none.
+  D64* drive8 = nullptr;
+
   // Virtual disk (device 8) hooks: return true on success
   std::function<bool(const std::string& pattern, std::vector<uint8_t>& data)> diskLoad;
   std::function<bool(const std::string& name, const std::vector<uint8_t>& data)> diskSave;
   std::function<void(std::vector<std::pair<std::string, uint32_t>>& files)> diskList;
-  std::string diskTitle = "C64MESH DISK";
+  std::string diskTitle = "HELTEC-C64";
 
   // Sound: when audioEnabled, each frame renders ~440 samples (SID_RATE Hz, mono int16)
   // into a ring buffer that the network side drains with readAudio().
@@ -116,6 +125,22 @@ class C64 {
 
   // banking
   bool mapBasic = true, mapKernal = true, mapIO = true, mapChar = false;
+  bool ultimax = false, mapRomL = false, mapRomHa = false, mapRomHe = false;
+
+  // cartridge
+  CartImage cart;
+  bool cartOn = false;
+  uint8_t exromLine = 1, gameLine = 1;   // 1 = high (inactive)
+  int cartBank = 0;
+  const uint8_t* curL = nullptr;
+  const uint8_t* curH = nullptr;
+  uint16_t curMaskL = 0x1FFF, curMaskH = 0x1FFF;
+  uint8_t efRam[256];
+  void cartReset();
+  void cartSelect(int bank);
+  uint8_t cartIoRead(uint16_t ad);
+  void cartIoWrite(uint16_t ad, uint8_t v);
+  bool buildDirectory(std::vector<uint8_t>& data);
   void updateBanking();
 
   uint8_t read(uint16_t addr);

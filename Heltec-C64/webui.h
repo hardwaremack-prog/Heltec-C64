@@ -3,7 +3,7 @@
 static const char SETTINGS_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>C64 Mesh Settings</title>
+<title>Heltec-C64 Settings</title>
 <style>
 :root{--blue:#2e2c9b;--lblue:#706deb;--ink:#e8e7ff;--dim:#b3b1f5;--card:#3a38b0;--ok:#a9ff9f;--warn:#edf171;--bad:#ff9a9f}
 *{box-sizing:border-box}
@@ -33,7 +33,7 @@ code{background:rgba(0,0,0,.25);padding:1px 5px;border-radius:2px}
 #toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#fff;color:var(--blue);padding:8px 14px;border-radius:3px;font-weight:bold;display:none}
 @media (max-width:560px){.hide-s{display:none}}
 </style></head><body><div class="frame">
-<h1>**** C64 Mesh ****</h1>
+<h1>**** HELTEC-C64 ****</h1>
 <p class="sub">Commodore 64 on a Heltec V3 &middot; <a href="/" style="color:#fff">&larr; back to the C64</a></p>
 
 <section><h2>Status</h2><div class="grid">
@@ -53,7 +53,19 @@ code{background:rgba(0,0,0,.25);padding:1px 5px;border-radius:2px}
 <p class="note">Upload your own BASIC (8&nbsp;KB), KERNAL (8&nbsp;KB) and CHARACTER (4&nbsp;KB) ROM dumps. A 16&nbsp;KB BASIC+KERNAL combo file is also accepted in either slot. Files stay on the board's flash; built-in fallback is the free Open ROMs, whose BASIC is still incomplete (no maths), so real ROMs give the proper experience.</p>
 </section>
 
-<section><h2>Virtual disk (device 8)</h2>
+<section><h2>Cartridge</h2>
+<div id="cart" class="note">-</div>
+<div class="row"><input type="file" id="cartfile" accept=".crt,.CRT,.bin,.BIN"><button onclick="upCart()" id="cartbtn">Upload &amp; insert</button><span id="cartprog" class="note"></span></div>
+<p class="note">Plug in a cartridge from a <code>.crt</code> file (up to 1.1&nbsp;MB, kept on the board's flash). Supported: normal 8K/16K, MAX/Ultimax, Ocean, Magic Desk/Domark, C64 Game System/System&nbsp;3, Dinamic, Super Games, Simons' BASIC and EasyFlash. The C64 restarts into the cartridge; eject it to get back to BASIC.</p>
+</section>
+
+<section><h2>Floppy disks (drive 8)</h2>
+<table><thead><tr><th>Disk image</th><th></th></tr></thead><tbody id="d64s"></tbody></table>
+<div class="row"><input type="file" id="d64file" accept=".d64,.D64"><button onclick="upD64()" id="d64btn">Upload .D64</button><span id="d64prog" class="note"></span></div>
+<p class="note">Put a disk in the drive, then on the C64: <code>LOAD"$",8</code> + <code>LIST</code> for its directory and <code>LOAD"NAME",8,1</code> + <code>RUN</code> (or <code>LOAD"*",8,1</code> for the first program). Games with their own fast loaders or that load more parts later may not work, because there's no real 1541 drive inside. With no disk in the drive, the program files below are drive 8.</p>
+</section>
+
+<section><h2>Program files (.prg)</h2>
 <table><thead><tr><th>File</th><th>Blocks</th><th></th></tr></thead><tbody id="disk"></tbody></table>
 <div class="row"><input type="file" id="prgfile" accept=".prg,.PRG"><label><input type="checkbox" id="prgrun" checked> load &amp; run now</label><button onclick="upPrg()">Upload .PRG</button></div>
 <p class="note">On the C64: <code>LOAD"$",8</code> then <code>LIST</code> for the directory, <code>LOAD"NAME",8,1</code> to load, <code>SAVE"NAME",8</code> to save. <span id="diskfree"></span></p>
@@ -93,6 +105,13 @@ async function load(full){
  const m=st.roms.basic.use+st.roms.kernal.use;
  $('rommsg').innerHTML=st.romsPending?'<span class="warn">Changes not applied yet</span>':(m==1?'<span class="warn">Mixing a real KERNAL/BASIC with Open ROMs may not work well</span>':'Running: '+esc(st.romName));
  }
+ const c=st.cart||{};
+ $('cart').innerHTML=c.stored?(c.on?'<span class="ok">Inserted:</span> ':'Stored, not inserted: ')+esc(c.name||'cartridge')+' &middot; '+esc(c.type)+' &middot; '+Math.round(c.size/1024)+' KB '+
+   (c.on?'<button class="alt" onclick="cartAct(\'cartout\')">Eject</button>':'<button onclick="cartAct(\'cartin\')">Insert</button>'):'No cartridge stored.';
+ const dk=st.d64||{images:[]};
+ $('d64s').innerHTML=dk.images.length?dk.images.map(f=>{const on=f.n===dk.in;return `<tr><td>${on?'<span class="ok">&#9679; in drive</span> ':''}${esc(f.n)}</td><td style="text-align:right">`+
+   (on?`<button class="alt" data-n="" onclick="d64In(this)">Eject</button>`:`<button data-n="${esc(f.n)}" onclick="d64In(this)">Insert</button>`)+
+   ` <a href="#" data-n="${esc(f.n)}" onclick="d64Del(this);return false" style="color:#ff9a9f">&times;</a></td></tr>`}).join(''):'<tr><td colspan=2 class="note">No disk images yet</td></tr>';
  $('disk').innerHTML=st.disk.length?st.disk.map(f=>`<tr><td>${esc(f.n)}</td><td>${Math.ceil(f.s/254)}</td><td style="text-align:right"><button class="alt" onclick="runPrg('${esc(f.n)}')">Run</button> <a href="/api/disk/${encodeURIComponent(f.n)}" download="${esc(f.n)}.prg" style="color:#fff">&darr;</a> <a href="#" onclick="delPrg('${esc(f.n)}');return false" style="color:#ff9a9f">&times;</a></td></tr>`).join(''):'<tr><td colspan=3 class="note">Empty disk</td></tr>';
  $('diskfree').textContent='Flash free: '+Math.round(st.fsfree/1024)+' KB.';
 }
@@ -100,6 +119,15 @@ async function up(url,file){const fd=new FormData();fd.append('file',file,file.n
 async function upRom(k){const f=$('f_'+k).files[0];if(!f)return toast('Pick a file first');await up('/api/rom?slot='+k,f);load(true)}
 async function delRom(k){if(!confirm('Remove your '+k+' ROM file?'))return;await fetch('/api/romdel?slot='+k,{method:'POST'});load(true)}
 async function saveRoms(){const q=SLOTS.map(([k])=>k+'='+$('sel_'+k).value).join('&');const r=await fetch('/api/romsel?'+q,{method:'POST'});toast(r.ok?'Restarting C64 with selected ROMs':'Failed');setTimeout(()=>load(true),800)}
+function upProgress(url,file,progEl,btn){return new Promise(res=>{const fd=new FormData();fd.append('file',file,file.name);const x=new XMLHttpRequest();x.open('POST',url);
+ btn.disabled=true;x.upload.onprogress=e=>{if(e.lengthComputable)progEl.textContent=Math.round(e.loaded*100/e.total)+'%'};
+ x.onload=()=>{btn.disabled=false;progEl.textContent='';toast(x.status==200?'Done':x.responseText);res(x.status==200)};
+ x.onerror=()=>{btn.disabled=false;progEl.textContent='';toast('Upload failed');res(false)};x.send(fd)})}
+async function upCart(){const f=$('cartfile').files[0];if(!f)return toast('Pick a .crt file first');$('cartprog').textContent='0%';await upProgress('/api/cart',f,$('cartprog'),$('cartbtn'));load(true)}
+async function cartAct(a){await fetch('/api/'+a,{method:'POST'});toast(a=='cartin'?'Cartridge in, C64 restarting':'Cartridge out, C64 restarting');setTimeout(()=>load(true),500)}
+async function upD64(){const f=$('d64file').files[0];if(!f)return toast('Pick a .d64 file first');$('d64prog').textContent='0%';await upProgress('/api/d64?insert=1',f,$('d64prog'),$('d64btn'));load(true)}
+async function d64In(b){const r=await fetch('/api/d64in?name='+encodeURIComponent(b.dataset.n),{method:'POST'});toast(r.ok?(b.dataset.n?'Disk in drive 8':'Drive empty'):await r.text());load(true)}
+async function d64Del(a){if(!confirm('Delete disk image '+a.dataset.n+'?'))return;await fetch('/api/d64del?name='+encodeURIComponent(a.dataset.n),{method:'POST'});load(true)}
 async function upPrg(){const f=$('prgfile').files[0];if(!f)return toast('Pick a .PRG first');await up('/api/prg?run='+($('prgrun').checked?1:0),f);load()}
 async function runPrg(n){await fetch('/api/run?name='+encodeURIComponent(n),{method:'POST'});toast('Loading '+n)}
 async function delPrg(n){if(!confirm('Delete '+n+'?'))return;await fetch('/api/diskdel?name='+encodeURIComponent(n),{method:'POST'});load()}

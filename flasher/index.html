@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>C64 Mesh Flasher</title>
+<title>Heltec-C64 Flasher</title>
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 <style>
 :root{--blue:#2e2c9b;--lblue:#706deb;--ink:#e8e7ff;--dim:#b3b1f5;--card:#3a38b0;--ok:#a9ff9f;--warn:#edf171}
@@ -27,12 +27,12 @@ a{color:#fff}
 .cursor{display:inline-block;width:.6em;height:1em;background:var(--ink);vertical-align:-2px;animation:b 1s steps(1) infinite}
 @keyframes b{50%{opacity:0}}
 </style></head><body><div class="frame">
-<h1>**** C64 Mesh Flasher ****</h1>
-<p class="sub">Turns a Heltec WiFi LoRa 32 V3 into a Commodore 64 &middot; firmware 2026.11.1</p>
+<h1>**** HELTEC-C64 FLASHER ****</h1>
+<p class="sub">Turns a Heltec WiFi LoRa 32 V3 into a Commodore 64 &middot; firmware 2026.11.2</p>
 
 <div class="big">
  <esp-web-install-button manifest="manifest.json">
-  <button slot="activate" class="btn">INSTALL C64 MESH</button>
+  <button slot="activate" class="btn">INSTALL HELTEC-C64</button>
   <div slot="unsupported" class="msg"><b>This browser can't talk to USB devices.</b><br>Open this page in <b>Chrome</b> or <b>Edge</b> on a computer (Windows, Mac, Linux or a Raspberry Pi). Safari, Firefox and phones can't flash boards.</div>
   <div slot="not-allowed" class="msg"><b>This page must be opened over https.</b><br>Use the published link rather than opening the file from your computer.</div>
  </esp-web-install-button>
@@ -42,7 +42,7 @@ a{color:#fff}
 <h2>How to flash</h2>
 <ol>
  <li><b>Plug the Heltec V3 into this computer</b> with a USB-C cable that carries data (some charge-only cables don't).</li>
- <li><b>Click INSTALL C64 MESH</b>, pick the board's port in the list (usually <code>CP210x</code> or <code>USB Serial</code>) and click <b>Connect</b>.</li>
+ <li><b>Click INSTALL HELTEC-C64</b>, pick the board's port in the list (usually <code>CP210x</code> or <code>USB Serial</code>) and click <b>Connect</b>.</li>
  <li><b>Choose whether to erase:</b> tick <i>Erase</i> the first time (coming from Meshtastic). When <b>updating</b>, leave it unticked so your uploaded ROMs and disk files are kept.</li>
  <li><b>Click Install</b> and wait about a minute until it says done. Then press the board's <b>RST</b> button.</li>
  <li>The OLED shows the next step: join the <code>C64-Setup</code> Wi&#8209;Fi (password <code>commodore64</code>) and open <code>http://192.168.4.1/settings</code> to put it on your network.</li>
@@ -57,5 +57,5 @@ a{color:#fff}
 
 <h2>Going back to Meshtastic</h2>
 <p class="note">Flash Meshtastic again any time from <a href="https://flasher.meshtastic.org" target="_blank" rel="noopener">flasher.meshtastic.org</a>.</p>
-<p class="note">Project, source and instructions: <a href="https://github.com/hardwaremack-prog/c64mesh">github.com/hardwaremack-prog/c64mesh</a></p>
+<p class="note">Project, source and instructions: <a href="https://github.com/hardwaremack-prog/Heltec-C64">github.com/hardwaremack-prog/Heltec-C64</a></p>
 </div></body></html>

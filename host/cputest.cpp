@@ -1,4 +1,4 @@
-#include "../C64Mesh/c64.h"
+#include "../Heltec-C64/c64.h"
 #include <cstdio>
 #include <vector>
 int main(int argc, char** argv) {
