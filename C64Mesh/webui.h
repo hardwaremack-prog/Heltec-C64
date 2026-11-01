@@ -1,9 +1,9 @@
 // Web control page served at http://<board-ip>/
 #pragma once
-static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
+static const char SETTINGS_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>C64 Mesh</title>
+<title>C64 Mesh Settings</title>
 <style>
 :root{--blue:#2e2c9b;--lblue:#706deb;--ink:#e8e7ff;--dim:#b3b1f5;--card:#3a38b0;--ok:#a9ff9f;--warn:#edf171;--bad:#ff9a9f}
 *{box-sizing:border-box}
@@ -34,17 +34,17 @@ code{background:rgba(0,0,0,.25);padding:1px 5px;border-radius:2px}
 @media (max-width:560px){.hide-s{display:none}}
 </style></head><body><div class="frame">
 <h1>**** C64 Mesh ****</h1>
-<p class="sub">Commodore 64 on a Heltec V3 &middot; <span id="ready">READY.</span></p>
+<p class="sub">Commodore 64 on a Heltec V3 &middot; <a href="/" style="color:#fff">&larr; back to the C64</a></p>
 
 <section><h2>Status</h2><div class="grid">
-<div class="stat"><b>VNC address</b><span id="vncaddr">-</span></div>
-<div class="stat"><b>VNC viewer</b><span id="vnccli">-</span></div>
+<div class="stat"><b>Open the C64 at</b><span id="addr">-</span></div>
+<div class="stat"><b>Viewer</b><span id="viewer">-</span></div>
 <div class="stat"><b>Speed</b><span id="speed">-</span></div>
 <div class="stat"><b>Wi-Fi</b><span id="wifi">-</span></div>
 </div>
 <div class="row"><button onclick="act('reset')">Reset C64</button><button class="alt" onclick="act('restore')">RESTORE key</button>
 <label><input type="checkbox" id="warp" onchange="act('warp?on='+(this.checked?1:0))"> Warp speed</label></div>
-<p class="note">Open any VNC viewer (RealVNC, TigerVNC, TightVNC) to the address above, no password. Keys: Esc = RUN/STOP, Page Up = RESTORE, Tab/Ctrl = CTRL, Alt = C=, Home = CLR/HOME, F1&ndash;F8 as on the C64. Numeric keypad 8/2/4/6 + 0 = joystick in port 2. Paste text into the viewer to type it.</p>
+<p class="note">Open the address above in any browser (PC, Mac, iPhone). Keys: Esc = RUN/STOP, Page Up = RESTORE, Tab/Ctrl = CTRL, Alt = C=, Home = CLR/HOME, F1&ndash;F8 as on the C64. Numeric keypad 8/2/4/6 + 0 = joystick. One viewer at a time.</p>
 </section>
 
 <section><h2>ROMs</h2>
@@ -79,8 +79,8 @@ let st={};
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 async function load(full){
  try{st=await (await fetch('/api/status')).json()}catch(e){return}
- $('vncaddr').textContent=st.ip+':5900';
- $('vnccli').innerHTML=st.vnc?'<span class="ok">connected</span>':'none';
+ $('addr').innerHTML='<a style="color:#fff" href="http://'+st.ip+'/">http://'+st.ip+'/</a>';
+ $('viewer').innerHTML=st.viewer?'<span class="ok">connected</span>'+(st.sound?' &#128266;':''):'none';
  $('speed').textContent=st.speed+'%'+(st.warp?' (warp)':'');
  $('warp').checked=!!st.warp;
  $('wifi').textContent=st.mode=='ap'?'Hotspot C64-Setup':(st.ssid+' '+st.rssi+'dBm');

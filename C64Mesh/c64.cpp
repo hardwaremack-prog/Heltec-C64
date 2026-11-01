@@ -94,7 +94,8 @@ void C64::reset() {
   for (int i = 0; i < 65536; i++) ram[i] = (i & 0x40) ? 0xFF : 0x00;
   memset(colorRam, 0x0E, sizeof colorRam);
   memset(vic, 0, sizeof vic);
-  memset(sid, 0, sizeof sid);
+  sid.reset();
+  sidLogN = 0;
   cia1.reset();
   cia2.reset();
   port00 = 0x2F; port01 = 0x37;
@@ -173,12 +174,7 @@ uint8_t C64::readIO(uint16_t ad) {
         return vic[r];
     }
   }
-  if (ad < 0xD800) {  // SID
-    int r = ad & 0x1F;
-    if (r == 0x19 || r == 0x1A) return 0xFF;
-    if (r == 0x1B || r == 0x1C) return (uint8_t)rand();
-    return 0;
-  }
+  if (ad < 0xD800) return sid.read(ad & 0x1F);  // SID
   if (ad < 0xDC00) return (colorRam[ad & 0x3FF] & 0x0F) | 0xF0;
   if (ad < 0xDD00) return readCIA(cia1, ad & 0x0F, true);
   if (ad < 0xDE00) return readCIA(cia2, ad & 0x0F, false);
@@ -199,7 +195,11 @@ void C64::writeIO(uint16_t ad, uint8_t v) {
     }
     return;
   }
-  if (ad < 0xD800) { sid[ad & 0x1F] = v; return; }
+  if (ad < 0xD800) {  // SID: logged with its cycle so the sound renders with correct timing
+    if (sidLogN < (int)(sizeof sidLog / sizeof sidLog[0])) sidLog[sidLogN++] = {(uint16_t)frameCycle, (uint8_t)(ad & 0x1F), v};
+    else sid.write(ad & 0x1F, v);
+    return;
+  }
   if (ad < 0xDC00) { colorRam[ad & 0x3FF] = v & 0x0F; return; }
   if (ad < 0xDD00) { writeCIA(cia1, ad & 0x0F, v, true); return; }
   if (ad < 0xDE00) { writeCIA(cia2, ad & 0x0F, v, false); return; }
@@ -868,8 +868,10 @@ void C64::runFrame() {
     if (line == 0x30) denFrame = (vic[0x11] & 0x10) != 0;
     bool bad = isBadLine(line);
     pendingCycles += bad ? 23 : C64_CYCLES_PER_LINE;
+    frameCycle = line * C64_CYCLES_PER_LINE + (bad ? 40 : 0);
     while (pendingCycles > 0) {
       int c = step();
+      frameCycle += c;
       cia1.tick(c);
       cia2.tick(c);
       bool n = cia2.irq();
@@ -881,6 +883,7 @@ void C64::runFrame() {
     if (bad) { cia1.tick(40); cia2.tick(40); }
     renderLine(line);
   }
+  finishAudioFrame();
   frameCount++;
   if (frameCount % 5 == 0) { cia1.todTenth(); cia2.todTenth(); }
   pumpTypeBuffer();
@@ -937,4 +940,44 @@ void C64::injectPrg(const uint8_t* d, size_t len, bool run) {
     snprintf(buf, sizeof buf, "SYS%u\r", start);
     typeText(buf);
   }
+}
+
+// ---------------------------------------------------------------- audio
+void C64::finishAudioFrame() {
+  const double cps = SID_CLOCK / SID_RATE;
+  int li = 0;
+  if (!audioEnabled) {
+    for (; li < sidLogN; li++) sid.write(sidLog[li].reg, sidLog[li].val);
+    sidLogN = 0;
+    sampleCarry = 0;
+    return;
+  }
+  int16_t buf[512];
+  double t = sampleCarry;
+  while (t < C64_CYCLES_PER_FRAME) {
+    while (li < sidLogN && sidLog[li].cycle <= t) { sid.write(sidLog[li].reg, sidLog[li].val); li++; }
+    double until = li < sidLogN ? sidLog[li].cycle : C64_CYCLES_PER_FRAME;
+    int n = 0;
+    while (t < until && n < 512) { n++; t += cps; }
+    if (n == 0) continue;
+    sid.render(buf, n);
+    for (int i = 0; i < n; i++) {
+      int nh = (aHead + 1) % AUDIO_RING;
+      if (nh == aTail) break;  // nobody draining: drop
+      aRing[aHead] = buf[i];
+      aHead = nh;
+    }
+  }
+  for (; li < sidLogN; li++) sid.write(sidLog[li].reg, sidLog[li].val);
+  sidLogN = 0;
+  sampleCarry = t - C64_CYCLES_PER_FRAME;
+}
+
+int C64::readAudio(int16_t* out, int max) {
+  int n = 0;
+  while (n < max && aTail != aHead) {
+    out[n++] = aRing[aTail];
+    aTail = (aTail + 1) % AUDIO_RING;
+  }
+  return n;
 }

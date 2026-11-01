@@ -1,8 +1,9 @@
 /*
-  C64 Mesh  -  a Commodore 64 on a Heltec WiFi LoRa 32 V3 (ESP32-S3), viewed over VNC.
+  C64 Mesh  -  a Commodore 64 on a Heltec WiFi LoRa 32 V3 (ESP32-S3), played in a web browser.
 
-  - Emulator (6502 + VIC-II + CIA) runs on CPU core 1
-  - Wi-Fi, VNC server (port 5900), web page (port 80) and the OLED run on core 0
+  - Emulator (6502 + VIC-II + CIA + SID sound) runs on CPU core 1
+  - Wi-Fi, web pages (port 80), screen+sound stream (WebSocket, port 81) and the OLED run on core 0
+  - Open http://<board-ip>/ (or http://c64.local/) in any browser: screen, sound, keyboard, joystick
   - ROMs: built-in Open ROMs, or your own BASIC/KERNAL/CHARGEN uploaded from the web page
   - Virtual disk on flash: LOAD"$",8 / LOAD"NAME",8,1 / SAVE"NAME",8
   - OLED shows the IP address; PRG button: tap = switch OLED view, hold 2 s = reset the C64
@@ -20,9 +21,10 @@
 #include <vector>
 #include "c64.h"
 #include "keymap.h"
-#include "vnc.h"
+#include "stream.h"
 #include "builtin_roms.h"
 #include "webui.h"
+#include "player.h"
 
 // ---------------- Heltec V3 pins
 #define PIN_VEXT 36      // LOW = power to OLED
@@ -38,9 +40,9 @@ static const char* HOSTNAME = "c64";
 
 static C64 c64;
 static KeyMapper keys;
-static VncServer vnc(c64, keys);
+static StreamServer stream(c64, keys);
 static WebServer web(80);
-static WiFiServer vncListener(5900);
+static WiFiServer streamListener(81);
 static Preferences prefs;
 
 static bool apMode = false;
@@ -245,19 +247,19 @@ static void drawOled() {
       oled.text(0, 4, "PW:COMMODORE64");
       oled.text(0, 5, "192.168.4.1");
     } else {
-      oled.text(0, 2, "VNC TO:");
+      oled.text(0, 2, "OPEN IN BROWSER:");
       oled.text(0, 3, WiFi.localIP().toString().c_str());
-      oled.text(0, 4, WiFi.status() == WL_CONNECTED ? "PORT 5900" : "WIFI LOST...");
+      oled.text(0, 4, WiFi.status() == WL_CONNECTED ? "OR C64.LOCAL" : "WIFI LOST...");
     }
-    snprintf(line, sizeof line, "%s %d%%", vnc.active() ? "VIEWER ON" : "NO VIEWER", speedPct);
+    snprintf(line, sizeof line, "%s %d%%", stream.active() ? (stream.soundOn() ? "PLAYING+SND" : "PLAYING") : "NO VIEWER", speedPct);
     oled.text(0, 6, line);
     oled.text(0, 7, slots[1].use ? "ROMS: YOURS" : "ROMS: OPEN");
   }
   oled.show();
 }
 
-// ---------------- VNC transport over WiFiClient
-struct WifiConn : VncConn {
+// ---------------- stream transport over WiFiClient
+struct WifiConn : NetConn {
   WiFiClient c;
   explicit WifiConn(WiFiClient cl) : c(cl) { c.setNoDelay(true); }
   int read(uint8_t* b, int n) override {
@@ -299,7 +301,8 @@ static void emuTask(void*) {
       c64.injectPrg(prg.data(), prg.size(), run);
     }
     keys.apply(c64);
-    bool want = vnc.active() || oledPage == 1;
+    bool want = stream.active() || oledPage == 1;
+    c64.audioEnabled = stream.soundOn();
     c64.renderEnabled = want && (fc % renderEvery) == 0;
     c64.runFrame();
     fc++;
@@ -348,14 +351,15 @@ static void queuePrg(const std::vector<uint8_t>& d, bool run) {
 }
 
 static void setupWeb() {
-  web.on("/", HTTP_GET, [] { web.send_P(200, "text/html", INDEX_HTML); });
+  web.on("/", HTTP_GET, [] { web.send_P(200, "text/html", PLAYER_HTML); });
+  web.on("/settings", HTTP_GET, [] { web.send_P(200, "text/html", SETTINGS_HTML); });
 
   web.on("/api/status", HTTP_GET, [] {
     String j = "{";
     j += "\"ip\":\"" + (apMode ? String("192.168.4.1") : WiFi.localIP().toString()) + "\",";
     j += "\"mode\":\"" + String(apMode ? "ap" : "sta") + "\",";
     j += "\"ssid\":\"" + jsonEsc(WiFi.SSID()) + "\",\"rssi\":" + String(WiFi.RSSI()) + ",";
-    j += "\"vnc\":" + String(vnc.active() ? "true" : "false") + ",";
+    j += "\"viewer\":" + String(stream.active() ? "true" : "false") + ",\"sound\":" + String(stream.soundOn() ? "true" : "false") + ",";
     j += "\"speed\":" + String(speedPct) + ",\"warp\":" + String(warp ? "true" : "false") + ",";
     j += "\"romName\":\"" + jsonEsc(romName) + "\",\"romsPending\":" + String(romsPending ? "true" : "false") + ",\"roms\":{";
     for (int i = 0; i < 3; i++) {
@@ -491,10 +495,10 @@ static void netTask(void*) {
   bool btnHeld = false;
   for (;;) {
     web.handleClient();
-    WiFiClient nc = vncListener.accept();
-    if (nc) vnc.attach(new WifiConn(nc));
-    vnc.poll();
-    digitalWrite(PIN_LED, vnc.active() ? HIGH : LOW);
+    WiFiClient nc = streamListener.accept();
+    if (nc) stream.attach(new WifiConn(nc));
+    stream.poll();
+    digitalWrite(PIN_LED, stream.active() ? HIGH : LOW);
 
     uint32_t now = millis();
     if (now - lastSpeed >= 1000) {
@@ -572,13 +576,12 @@ void setup() {
   }
   if (MDNS.begin(HOSTNAME)) {
     MDNS.addService("http", "tcp", 80);
-    MDNS.addService("rfb", "tcp", 5900);
   }
-  Serial.printf("C64 Mesh ready: %s  (VNC :5900, web :80)\n", apMode ? "192.168.4.1" : WiFi.localIP().toString().c_str());
+  Serial.printf("C64 Mesh ready: http://%s/\n", apMode ? "192.168.4.1" : WiFi.localIP().toString().c_str());
 
-  vnc.onPaste = [](const std::string& t) { c64.typeText(t.c_str()); };
-  vncListener.begin();
-  vncListener.setNoDelay(true);
+  stream.onPaste = [](const std::string& t) { c64.typeText(t.c_str()); };
+  streamListener.begin();
+  streamListener.setNoDelay(true);
   setupWeb();
 
   xTaskCreatePinnedToCore(emuTask, "c64", 8192, nullptr, 3, nullptr, 1);

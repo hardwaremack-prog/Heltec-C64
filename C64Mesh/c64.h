@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include "sid.h"
 
 // ---- Screen geometry (PAL, with border) ----
 static const int C64_W = 384;            // 32px border + 320 + 32px border
@@ -60,6 +61,12 @@ class C64 {
   std::function<void(std::vector<std::pair<std::string, uint32_t>>& files)> diskList;
   std::string diskTitle = "C64MESH DISK";
 
+  // Sound: when audioEnabled, each frame renders ~440 samples (SID_RATE Hz, mono int16)
+  // into a ring buffer that the network side drains with readAudio().
+  volatile bool audioEnabled = false;
+  int readAudio(int16_t* out, int max);
+  int audioAvailable() const { return (aHead - aTail + AUDIO_RING) % AUDIO_RING; }
+
   // Helpers for the outside world
   void injectPrg(const uint8_t* data, size_t len, bool basicRun);
   bool typeText(const char* ascii);   // queue text into keyboard buffer (returns false if busy)
@@ -84,7 +91,16 @@ class C64 {
   uint8_t basicRom[8192], kernalRom[8192], charRom[4096];
   uint8_t colorRam[1024];
   uint8_t vic[64];
-  uint8_t sid[32];
+  SID sid;
+  struct SidWrite { uint16_t cycle; uint8_t reg, val; };
+  SidWrite sidLog[1024];
+  int sidLogN = 0;
+  int frameCycle = 0;          // CPU cycle within the current frame
+  double sampleCarry = 0;      // cycle position of the next audio sample
+  static const int AUDIO_RING = 4096;      // ~185 ms of sound
+  int16_t aRing[AUDIO_RING];
+  volatile int aHead = 0, aTail = 0;
+  void finishAudioFrame();
   CIA cia1, cia2;
   uint8_t port00 = 0x2F, port01 = 0x37;
   int raster = 0;

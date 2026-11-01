@@ -1,5 +1,5 @@
-// PC test harness for C64Mesh: same emulator + VNC code as the ESP32 build.
-//   ./c64host                         -> VNC server on :5900, real-time
+// PC test harness for C64Mesh: same emulator + stream code as the ESP32 build.
+//   ./c64host --port 8181             -> WebSocket stream (what the browser page talks to), real-time
 //   ./c64host --frames 300 --type "PRINT 2+2\n" --dump out.ppm   (headless)
 //   ROM overrides: --basic f --kernal f --chargen f ; virtual disk: --disk dir
 #include <arpa/inet.h>
@@ -18,10 +18,10 @@
 #include <algorithm>
 #include "../C64Mesh/c64.h"
 #include "../C64Mesh/keymap.h"
-#include "../C64Mesh/vnc.h"
+#include "../C64Mesh/stream.h"
 #include "../C64Mesh/builtin_roms.h"
 
-struct SockConn : VncConn {
+struct SockConn : NetConn {
   int fd;
   bool ok = true;
   explicit SockConn(int f) : fd(f) {
@@ -78,8 +78,9 @@ static bool wildMatch(const char* p, const char* s) {
 
 int main(int argc, char** argv) {
   std::string basic, kernal, chargen, disk = ".", dump, typed;
-  int frames = 0, port = 5900;
-  std::string sysPrg;
+  int frames = 0, port = 8181;
+  std::string sysPrg, wav;
+  std::vector<int16_t> pcm;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto nx = [&]() { return std::string(argv[++i]); };
@@ -92,6 +93,7 @@ int main(int argc, char** argv) {
     else if (a == "--type") typed = nx();
     else if (a == "--port") port = atoi(argv[++i]);
     else if (a == "--sys") sysPrg = nx();
+    else if (a == "--wav") wav = nx();
   }
   static C64 c64;
   std::vector<uint8_t> b(BUILTIN_BASIC, BUILTIN_BASIC + 8192), k(BUILTIN_KERNAL, BUILTIN_KERNAL + 8192),
@@ -143,7 +145,19 @@ int main(int argc, char** argv) {
     for (int f = 0; f < frames; f++) {
       if (!typedYet && f >= 150 && !typed.empty()) { c64.typeText(typed.c_str()); typedYet = true; }
       if (f == 150 && !sysPrg.empty()) { auto d = loadFile(sysPrg); c64.injectPrg(d.data(), d.size(), false); c64.pc = d[0] | (d[1] << 8); }
+      c64.audioEnabled = !wav.empty();
       c64.runFrame();
+      int16_t tmp[1024]; int n;
+      while ((n = c64.readAudio(tmp, 1024)) > 0) if (f > 150) pcm.insert(pcm.end(), tmp, tmp + n);
+    }
+    if (!wav.empty()) {
+      FILE* wf = fopen(wav.c_str(), "wb");
+      uint32_t ds = pcm.size() * 2, rate = SID_RATE, br = rate * 2, rs = 36 + ds;
+      uint16_t one = 1, ba = 2, bits = 16; uint32_t sixteen = 16;
+      fwrite("RIFF", 1, 4, wf); fwrite(&rs, 4, 1, wf); fwrite("WAVEfmt ", 1, 8, wf); fwrite(&sixteen, 4, 1, wf);
+      fwrite(&one, 2, 1, wf); fwrite(&one, 2, 1, wf); fwrite(&rate, 4, 1, wf); fwrite(&br, 4, 1, wf);
+      fwrite(&ba, 2, 1, wf); fwrite(&bits, 2, 1, wf); fwrite("data", 1, 4, wf); fwrite(&ds, 4, 1, wf);
+      fwrite(pcm.data(), 2, pcm.size(), wf); fclose(wf);
     }
     double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     printf("%d frames in %.3fs (%.1fx real time), pc=%04X\n", frames, s, frames * 0.01995 / s, c64.pc);
@@ -153,32 +167,35 @@ int main(int argc, char** argv) {
   }
 
   KeyMapper keys;
-  VncServer vnc(c64, keys);
-  vnc.onPaste = [&](const std::string& t) { c64.typeText(t.c_str()); };
-  std::atomic<bool> run{true};
-  std::thread emu([&] {
-    auto next = std::chrono::steady_clock::now();
-    while (run) {
-      keys.apply(c64);
-      c64.runFrame();
-      next += std::chrono::microseconds((int)C64_FRAME_US);
-      std::this_thread::sleep_until(next);
-    }
-  });
+  StreamServer stream(c64, keys);
+  stream.onPaste = [&](const std::string& t) { c64.typeText(t.c_str()); };
   int ls = socket(AF_INET, SOCK_STREAM, 0);
   int one = 1;
   setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
   sockaddr_in sa{};
   sa.sin_family = AF_INET; sa.sin_port = htons(port); sa.sin_addr.s_addr = INADDR_ANY;
   if (bind(ls, (sockaddr*)&sa, sizeof sa) < 0) { perror("bind"); return 1; }
+  std::atomic<bool> run{true};
+  std::thread emu([&] {
+    auto next = std::chrono::steady_clock::now();
+    int fno = 0;
+    while (run) {
+      if (++fno == 150 && !sysPrg.empty()) { auto d = loadFile(sysPrg); c64.injectPrg(d.data(), d.size(), false); c64.pc = d[0] | (d[1] << 8); }
+      keys.apply(c64);
+      c64.audioEnabled = stream.soundOn();
+      c64.runFrame();
+      next += std::chrono::microseconds((int)C64_FRAME_US);
+      std::this_thread::sleep_until(next);
+    }
+  });
   listen(ls, 2);
   fcntl(ls, F_SETFL, O_NONBLOCK);
-  printf("VNC listening on :%d\n", port);
+  printf("WebSocket stream on :%d\n", port);
   fflush(stdout);
   while (true) {
     int fd = accept(ls, nullptr, nullptr);
-    if (fd >= 0) vnc.attach(new SockConn(fd));
-    vnc.poll();
+    if (fd >= 0) stream.attach(new SockConn(fd));
+    stream.poll();
     usleep(2000);
   }
 }

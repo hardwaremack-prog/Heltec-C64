@@ -1,6 +1,7 @@
-// Maps VNC (X11 keysym) key events onto the C64 keyboard matrix and joystick.
+// Maps browser key events (as X11 keysyms) onto the C64 keyboard matrix and joystick.
 // Typing is "symbolic": pressing '"' on a PC sends SHIFT+2 to the C64, etc.
-// Numeric keypad 8/2/4/6 (+7/9/1/3 diagonals) and keypad 0/5 or Right-Ctrl = joystick port 2.
+// Numeric keypad 8/2/4/6 (+7/9/1/3 diagonals) and keypad 0/5 or Right-Ctrl = joystick (port 2 by default).
+// Keysyms 0xC64000 + row*8 + col press a C64 matrix key directly (used by the on-screen keyboard).
 #pragma once
 #include <stdint.h>
 #include "c64.h"
@@ -12,6 +13,7 @@ class KeyMapper {
   // Apply queued events to the C64; call once per emulated frame
   void apply(C64& c64);
   void releaseAll(C64& c64);
+  volatile int joyPort = 2;   // which port the keypad / on-screen joystick drives
 
  private:
   struct Ev { uint32_t sym; uint8_t down; };

@@ -17,6 +17,11 @@ static const Map DIGITS[10] = {{K(4, 3), SH_OFF}, {K(7, 0), SH_OFF}, {K(7, 3), S
 
 static bool lookup(uint32_t s, Map& m, uint8_t& joy, bool& restore) {
   joy = 0; restore = false;
+  if (s >= 0xC64000 && s < 0xC64040) {  // raw C64 matrix key (on-screen keyboard)
+    int idx = s - 0xC64000;
+    m = {(int8_t)(idx >> 3), (int8_t)(idx & 7), SH_PHYS};
+    return true;
+  }
   if (s >= 'a' && s <= 'z') { m = LETTERS[s - 'a']; return true; }
   if (s >= 'A' && s <= 'Z') { m = LETTERS[s - 'A']; return true; }
   if (s >= '0' && s <= '9') { m = DIGITS[s - '0']; return true; }
@@ -146,6 +151,8 @@ void KeyMapper::rebuild(C64& c) {
     if (physShiftR) rows[6] |= 0x10;
   }
   // joystick: up+down or left+right never both
+  // raw shift keys from the on-screen keyboard behave like physical shifts
   memcpy(c.keyRow, rows, 8);
-  c.joy2 = joy;
+  if (joyPort == 1) { c.joy1 = joy; c.joy2 = 0; }
+  else { c.joy2 = joy; c.joy1 = 0; }
 }
