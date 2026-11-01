@@ -1,0 +1,4 @@
+build/
+host/c64host
+host/cputest
+*.ppm
