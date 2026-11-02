@@ -34,6 +34,13 @@ esptool --chip esp32s3 write-flash 0x0 firmware/Heltec-C64.bin
 ```
 If the board doesn't show up, hold **PRG**, tap **RST**, release **PRG**, then try again.
 
+**Back up / clone:** the flasher can also save a board's whole flash to a `.bin` file
+(**Back up a board**, about 2 minutes) and write one back (**Restore / clone**), onto the same board
+or another Heltec V3. Back up your Meshtastic board first, and you can put it back exactly as it
+was later. A cloned C64 board gets your ROMs, cartridge, disks and Wi-Fi settings. Don't clone a
+Meshtastic backup onto a second radio without factory-resetting it, as it would share the
+first radio's keys. Backups include your Wi-Fi password, so keep them private.
+
 Re-flashing an update keeps your uploaded ROMs and disk files (unless you choose Erase).
 
 ## 2. Get it on Wi-Fi
